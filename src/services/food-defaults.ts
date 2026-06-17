@@ -7,6 +7,7 @@ export type FoodCategory = 'VEGETABLE' | 'FRUIT' | 'MEAT' | 'DAIRY' | 'SEASONING
 
 interface CategoryInfo {
   defaultExpiryDays: number;
+  reminderDaysBefore: number; // 提前几天开始提醒
   storageLocation: string;
   keywords: string[];
 }
@@ -14,36 +15,43 @@ interface CategoryInfo {
 export const FOOD_CATEGORY_MAP: Record<FoodCategory, CategoryInfo> = {
   VEGETABLE: {
     defaultExpiryDays: 7,
+    reminderDaysBefore: 2,
     storageLocation: 'FRIDGE',
     keywords: ['菜', '瓜', '豆', '茄', '椒', '菠菜', '白菜', '西兰花', '芹菜', '生菜', '萝卜', '土豆', '番茄', '洋葱', '蘑菇'],
   },
   FRUIT: {
     defaultExpiryDays: 5,
+    reminderDaysBefore: 2,
     storageLocation: 'FRIDGE',
     keywords: ['果', '莓', '苹果', '香蕉', '橙', '梨', '桃', '葡萄', '芒果', '西瓜', '草莓', '蓝莓', '柠檬'],
   },
   MEAT: {
     defaultExpiryDays: 3,
+    reminderDaysBefore: 1,
     storageLocation: 'FRIDGE',
     keywords: ['肉', '鸡', '牛', '猪', '羊', '鱼', '虾', '蟹', '排骨', '鸡翅', '培根', '香肠', '火腿'],
   },
   DAIRY: {
     defaultExpiryDays: 14,
+    reminderDaysBefore: 3,
     storageLocation: 'FRIDGE',
     keywords: ['奶', '酸奶', '牛奶', '芝士', '奶酪', '黄油', '酥油', '鸡蛋', '蛋'],
   },
   SEASONING: {
     defaultExpiryDays: 180,
+    reminderDaysBefore: 14,
     storageLocation: 'PANTRY',
     keywords: ['酱', '醋', '油', '盐', '糖', '料酒', '酱油', '蚝油', '辣椒', '花椒', '八角', '香料'],
   },
   BEVERAGE: {
     defaultExpiryDays: 90,
+    reminderDaysBefore: 7,
     storageLocation: 'PANTRY',
     keywords: ['水', '茶', '咖啡', '果汁', '可乐', '啤酒', '饮料', '汽水', '矿泉水'],
   },
   OTHER: {
     defaultExpiryDays: 30,
+    reminderDaysBefore: 3,
     storageLocation: 'PANTRY',
     keywords: [],
   },
@@ -75,4 +83,11 @@ export function getDefaultExpiryDays(foodName: string): number {
 export function getDefaultStorageLocation(foodName: string): string {
   const category = inferCategory(foodName);
   return FOOD_CATEGORY_MAP[category].storageLocation;
+}
+
+/**
+ * 获取食物提前提醒天数（根据品类不同，提醒时间不同）
+ */
+export function getReminderDaysBefore(category: FoodCategory): number {
+  return FOOD_CATEGORY_MAP[category].reminderDaysBefore;
 }

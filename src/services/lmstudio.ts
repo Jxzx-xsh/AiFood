@@ -6,9 +6,34 @@ export interface FoodItem {
   quantity: number;
   unit: string;
   estimated_expiry_days: number;
+  production_date?: string;    // 生产日期 (YYYY-MM-DD)
+  expiry_date?: string;        // 包装标注的过期日期 (YYYY-MM-DD)
+  shelf_life_days?: number;    // 包装标注的保质期天数
+  best_before_date?: string;   // 建议食用日期 (YYYY-MM-DD)
 }
 
-const SYSTEM_PROMPT = `你是一个精准的家庭食物识别专家。请分析这张图片，返回其中的所有食物。严格按照以下JSON Schema返回，不要包含任何其他文字或Markdown标记：[{"name": "中文名称", "quantity": 数字, "unit": "个/克/毫升", "estimated_expiry_days": 数字(从今天算起) }]`;
+const SYSTEM_PROMPT = `你是一个精准的家庭食物识别专家。请分析这张图片中的食物信息。
+
+图片可能是：食物实物照片、购物小票、食品包装（含生产日期/保质期）。
+
+请尽可能识别以下信息，严格按照JSON Schema返回，不要包含任何其他文字或Markdown标记：
+
+[{
+  "name": "中文名称",
+  "quantity": 数字,
+  "unit": "个/克/毫升/盒/袋",
+  "production_date": "生产日期(YYYY-MM-DD格式，如能识别)",
+  "expiry_date": "过期日期(YYYY-MM-DD格式，如能从包装/小票识别)",
+  "shelf_life_days": "保质期天数(如包装标注'保质期12个月'则为365)",
+  "estimated_expiry_days": "若无法识别具体日期，估算从今天起的剩余天数"
+}]
+
+重要规则：
+1. 如果能从小票或包装上识别到明确的生产日期和保质期，优先使用这些信息
+2. 如果能直接识别到过期日期(如"有效期至2026-08-01")，直接填入expiry_date
+3. 如果只能看到保质期天数(如"保质期180天")和生产日期，同时填入两者
+4. 如果都无法识别，则根据食物品类估算estimated_expiry_days
+5. 小票上的日期通常是购买日期，可作为参考`;
 
 /**
  * 调用 LMStudio 视觉模型识别食物
@@ -91,6 +116,10 @@ function parseAIResponse(content: string): FoodItem[] {
         quantity: Number(item.quantity) || 1,
         unit: item.unit || '个',
         estimated_expiry_days: Number(item.estimated_expiry_days) || 7,
+        production_date: item.production_date || undefined,
+        expiry_date: item.expiry_date || undefined,
+        shelf_life_days: item.shelf_life_days ? Number(item.shelf_life_days) : undefined,
+        best_before_date: item.best_before_date || undefined,
       }));
   } catch {
     throw new Error(`AI 返回格式解析失败: ${content.substring(0, 200)}`);

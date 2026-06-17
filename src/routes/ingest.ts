@@ -7,6 +7,14 @@ import { inferCategory, getDefaultExpiryDays, getDefaultStorageLocation } from '
 
 export const ingestRouter = Router();
 
+/**
+ * 校验日期字符串是否有效 (YYYY-MM-DD)
+ */
+function isValidDate(dateStr: string): boolean {
+  const d = new Date(dateStr);
+  return !isNaN(d.getTime()) && /^\d{4}-\d{2}-\d{2}$/.test(dateStr);
+}
+
 // 请求校验 Schema
 const IngestPhotoSchema = z.object({
   family_id: z.string().uuid(),
@@ -71,9 +79,45 @@ ingestRouter.post('/photo', async (req: Request, res: Response): Promise<void> =
 
     for (const item of aiItems) {
       const category = inferCategory(item.name);
-      const expiryDays = item.estimated_expiry_days || getDefaultExpiryDays(item.name);
-      const expiryDate = new Date(purchaseDate);
-      expiryDate.setDate(expiryDate.getDate() + expiryDays);
+
+      // 过期日期计算优先级：
+      // 1. AI 直接识别到的 expiry_date（包装标注"有效期至"）
+      // 2. production_date + shelf_life_days（生产日期 + 保质期天数）
+      // 3. purchase_date + estimated_expiry_days（拍照日期 + AI 估算天数）
+      // 4. purchase_date + 品类默认保质期（兜底）
+      let expiryDate: Date;
+      let computedSource = 'DEFAULT'; // 记录过期日期的来源
+
+      if (item.expiry_date && isValidDate(item.expiry_date)) {
+        // 情况 1：直接识别到过期日期
+        expiryDate = new Date(item.expiry_date);
+        computedSource = 'PACKAGE_EXPIRY';
+      } else if (item.production_date && isValidDate(item.production_date) && item.shelf_life_days) {
+        // 情况 2：生产日期 + 保质期天数
+        expiryDate = new Date(item.production_date);
+        expiryDate.setDate(expiryDate.getDate() + item.shelf_life_days);
+        computedSource = 'PRODUCTION_PLUS_SHELF';
+      } else if (item.estimated_expiry_days) {
+        // 情况 3：AI 估算的剩余天数
+        expiryDate = new Date(purchaseDate);
+        expiryDate.setDate(expiryDate.getDate() + item.estimated_expiry_days);
+        computedSource = 'AI_ESTIMATED';
+      } else {
+        // 情况 4：品类默认值兜底
+        const defaultDays = getDefaultExpiryDays(item.name);
+        expiryDate = new Date(purchaseDate);
+        expiryDate.setDate(expiryDate.getDate() + defaultDays);
+        computedSource = 'CATEGORY_DEFAULT';
+      }
+
+      // 计算从今天到过期的天数
+      const now = new Date();
+      const daysToExpiry = Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+
+      // 确定购买/生产日期
+      const actualPurchaseDate = item.production_date && isValidDate(item.production_date)
+        ? item.production_date
+        : purchaseDate.toISOString().split('T')[0];
 
       const record = {
         family_id,
@@ -82,11 +126,11 @@ ingestRouter.post('/photo', async (req: Request, res: Response): Promise<void> =
         category,
         quantity: item.quantity,
         unit: item.unit,
-        purchase_date: purchaseDate.toISOString().split('T')[0],
+        purchase_date: actualPurchaseDate,
         expiry_date: expiryDate.toISOString().split('T')[0],
-        days_to_expiry: expiryDays,
+        days_to_expiry: daysToExpiry,
         storage_location: getDefaultStorageLocation(item.name),
-        source: 'PHOTO',
+        source: 'PHOTO' as const,
       };
 
       const [inserted] = await db('food_items').insert(record).returning('*');
@@ -95,6 +139,7 @@ ingestRouter.post('/photo', async (req: Request, res: Response): Promise<void> =
         quantity: inserted.quantity,
         unit: inserted.unit,
         expiry_date: inserted.expiry_date,
+        expiry_source: computedSource,
       });
     }
 
