@@ -1,0 +1,56 @@
+# Home Assistant 自动化配置
+# 将以下内容添加到 HA 的 automations.yaml 中
+
+# ========== 食物过期提醒自动化 ==========
+
+- id: food_expiry_notification
+  alias: "食物过期提醒"
+  description: "当食物即将过期传感器状态变更时，推送通知"
+  trigger:
+    - platform: state
+      entity_id: sensor.family_kitchen_food_expiring_soon
+  condition:
+    - condition: template
+      value_template: "{{ state_attr('sensor.family_kitchen_food_expiring_soon', 'count') | int > 0 }}"
+  action:
+    - service: notify.mobile_app_iphone
+      data:
+        title: "🍎 食物管家提醒"
+        message: "{{ states('sensor.family_kitchen_food_expiring_soon') }}"
+        data:
+          actions:
+            - action: "OPEN_INVENTORY"
+              title: "查看库存"
+    - condition: time
+      after: "08:00:00"
+      before: "21:00:00"
+    - service: tts.speak
+      target:
+        entity_id: media_player.kitchen_speaker
+      data:
+        message: "提醒您，{{ states('sensor.family_kitchen_food_expiring_soon') }}"
+
+# ========== 每日早间食物状态播报 ==========
+
+- id: food_morning_report
+  alias: "每日早间食物播报"
+  description: "每天早上8点播报食物状态"
+  trigger:
+    - platform: time
+      at: "08:00:00"
+  condition:
+    - condition: template
+      value_template: "{{ state_attr('sensor.family_kitchen_food_expiring_soon', 'count') | int > 0 }}"
+  action:
+    - service: notify.mobile_app_iphone
+      data:
+        title: "🌅 今日食物状态"
+        message: >
+          库存提醒：{{ states('sensor.family_kitchen_food_expiring_soon') }}
+
+# ========== HomeKit 暴露传感器 ==========
+# 在 configuration.yaml 中添加：
+# homekit:
+#   filter:
+#     include_entities:
+#       - sensor.family_kitchen_food_expiring_soon

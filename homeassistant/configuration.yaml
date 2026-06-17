@@ -1,0 +1,30 @@
+# Home Assistant 配置片段
+# 将以下内容合并到 HA 的 configuration.yaml 中
+
+# ========== 模板传感器定义 ==========
+template:
+  - sensor:
+      - name: "食物过期倒计时"
+        unique_id: food_expiry_countdown
+        state: >
+          {{ state_attr('sensor.family_kitchen_food_expiring_soon', 'count') | int }}
+        unit_of_measurement: "项"
+        icon: mdi:food-apple-outline
+        attributes:
+          items: "{{ state_attr('sensor.family_kitchen_food_expiring_soon', 'items') }}"
+
+# ========== HomeKit Bridge 配置 ==========
+homekit:
+  - name: "Food Manager"
+    filter:
+      include_entities:
+        - sensor.family_kitchen_food_expiring_soon
+        - sensor.food_expiry_countdown
+
+# ========== REST 命令（可选：从 HA 触发 Node.js API）==========
+rest_command:
+  food_check_expiry:
+    url: "http://192.168.1.100:3000/api/v1/inventory/expiring?family_id=00000000-0000-0000-0000-000000000001&days=3"
+    method: GET
+    headers:
+      X-API-Key: "your_api_key_here"
