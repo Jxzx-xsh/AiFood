@@ -7,9 +7,9 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "migrate": "knex migrate:latest --knexfile src/database/knexfile.ts",
-    "migrate:rollback": "knex migrate:rollback --knexfile src/database/knexfile.ts",
-    "seed": "knex seed:run --knexfile src/database/knexfile.ts"
+    "migrate": "ts-node node_modules/.bin/knex migrate:latest --knexfile knexfile.ts",
+    "migrate:rollback": "ts-node node_modules/.bin/knex migrate:rollback --knexfile knexfile.ts",
+    "seed": "ts-node node_modules/.bin/knex seed:run --knexfile knexfile.ts"
   },
   "dependencies": {
     "axios": "1.7.9",
