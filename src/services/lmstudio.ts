@@ -12,38 +12,53 @@ const SYSTEM_PROMPT = `你是一个精准的家庭食物识别专家。请分析
 
 /**
  * 调用 LMStudio 视觉模型识别食物
+ * LMStudio 使用 OpenAI 兼容 API 格式
  */
 export async function recognizeFood(imageBase64: string): Promise<FoodItem[]> {
-  // 去除 data:image/xxx;base64, 前缀
-  const pureBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+  // 确保有 data:image 前缀
+  const imageUrl = imageBase64.startsWith('data:image')
+    ? imageBase64
+    : `data:image/jpeg;base64,${imageBase64}`;
 
   const payload = {
     model: config.lmstudio.model,
     messages: [
       {
         role: 'user',
-        content: SYSTEM_PROMPT,
-        images: [pureBase64],
+        content: [
+          {
+            type: 'text',
+            text: SYSTEM_PROMPT,
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: imageUrl,
+            },
+          },
+        ],
       },
     ],
+    temperature: 0.1,
+    max_tokens: 2048,
     stream: false,
-    options: {
-      temperature: 0.1,
-    },
   };
 
   try {
     const response = await axios.post(
-      `${config.lmstudio.host}/api/chat`,
+      `${config.lmstudio.host}/v1/chat/completions`,
       payload,
       { timeout: config.lmstudio.timeout }
     );
 
-    const content = response.data?.message?.content || response.data?.choices?.[0]?.message?.content || '';
+    const content = response.data?.choices?.[0]?.message?.content || '';
     return parseAIResponse(content);
   } catch (error: any) {
     if (error.code === 'ECONNABORTED') {
       throw new Error('LMStudio 请求超时（60秒），模型可能正在加载中');
+    }
+    if (error.response) {
+      throw new Error(`LMStudio 返回错误 ${error.response.status}: ${JSON.stringify(error.response.data)}`);
     }
     throw new Error(`LMStudio 调用失败: ${error.message}`);
   }
@@ -53,7 +68,6 @@ export async function recognizeFood(imageBase64: string): Promise<FoodItem[]> {
  * 解析 AI 返回的 JSON，兼容常见格式问题
  */
 function parseAIResponse(content: string): FoodItem[] {
-  // 尝试直接解析
   let cleaned = content.trim();
 
   // 去除可能的 markdown 代码块标记

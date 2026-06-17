@@ -18,8 +18,8 @@ export const config = {
     url: process.env.REDIS_URL || 'redis://localhost:6379',
   },
   lmstudio: {
-    host: process.env.LMSTUDIO_HOST || 'http://localhost:11434',
-    model: process.env.VISION_MODEL || 'llama3.2-vision:11b',
+    host: process.env.LMSTUDIO_HOST || 'http://localhost:1234',
+    model: process.env.VISION_MODEL || 'llama-3.2-11b-vision',
     timeout: 60000, // 60 seconds
   },
   homeAssistant: {
