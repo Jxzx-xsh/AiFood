@@ -1,15 +1,92 @@
 import axios from 'axios';
 import { config } from '../config';
 
+const MAX_RETRIES = 6;
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟无请求后卸载模型
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ========== 模型生命周期管理 ==========
+
+let idleTimer: NodeJS.Timeout | null = null;
+let modelLoaded = false;
+
+/**
+ * 加载视觉模型到 LMStudio
+ */
+async function loadModel(): Promise<void> {
+  if (modelLoaded) return;
+
+  console.log(`🔄 正在加载模型: ${config.lmstudio.model} ...`);
+  try {
+    await axios.post(
+      `${config.lmstudio.host}/api/v1/models/load`,
+      {
+        model: config.lmstudio.model,
+        context_length: 4096,
+      },
+      { timeout: 120000 } // 加载可能需要较长时间
+    );
+    modelLoaded = true;
+    console.log(`✅ 模型已加载: ${config.lmstudio.model}`);
+  } catch (error: any) {
+    // 如果模型已经加载了，忽略错误
+    if (error.response?.data?.error?.message?.includes('already loaded')) {
+      modelLoaded = true;
+      console.log(`✅ 模型已在内存中: ${config.lmstudio.model}`);
+      return;
+    }
+    console.error(`❌ 模型加载失败: ${error.message}`);
+    throw new Error(`模型加载失败: ${error.message}`);
+  }
+}
+
+/**
+ * 卸载视觉模型，释放内存
+ */
+async function unloadModel(): Promise<void> {
+  if (!modelLoaded) return;
+
+  console.log(`💤 空闲超时，正在卸载模型: ${config.lmstudio.model} ...`);
+  try {
+    await axios.post(
+      `${config.lmstudio.host}/api/v1/models/unload`,
+      { instance_id: config.lmstudio.model },
+      { timeout: 30000 }
+    );
+    modelLoaded = false;
+    console.log(`✅ 模型已卸载，内存已释放`);
+  } catch (error: any) {
+    console.error(`❌ 模型卸载失败: ${error.message}`);
+    modelLoaded = false; // 标记为未加载，下次会重新加载
+  }
+}
+
+/**
+ * 重置空闲计时器（每次请求后调用）
+ */
+function resetIdleTimer(): void {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+  }
+  idleTimer = setTimeout(() => {
+    unloadModel();
+  }, IDLE_TIMEOUT_MS);
+}
+
+// ========== 食物识别接口 ==========
+
 export interface FoodItem {
   name: string;
   quantity: number;
   unit: string;
   estimated_expiry_days: number;
-  production_date?: string;    // 生产日期 (YYYY-MM-DD)
-  expiry_date?: string;        // 包装标注的过期日期 (YYYY-MM-DD)
-  shelf_life_days?: number;    // 包装标注的保质期天数
-  best_before_date?: string;   // 建议食用日期 (YYYY-MM-DD)
+  production_date?: string;
+  expiry_date?: string;
+  shelf_life_days?: number;
+  best_before_date?: string;
 }
 
 const SYSTEM_PROMPT = `你是一个精准的家庭食物识别专家。请分析这张图片中的食物信息。
@@ -37,10 +114,13 @@ const SYSTEM_PROMPT = `你是一个精准的家庭食物识别专家。请分析
 
 /**
  * 调用 LMStudio 视觉模型识别食物
- * LMStudio 使用 OpenAI 兼容 API 格式
+ * 自动管理模型生命周期：请求时加载，空闲5分钟后卸载
  */
 export async function recognizeFood(imageBase64: string): Promise<FoodItem[]> {
-  // 确保有 data:image 前缀
+  // 1. 确保模型已加载
+  await loadModel();
+
+  // 2. 构建请求
   const imageUrl = imageBase64.startsWith('data:image')
     ? imageBase64
     : `data:image/jpeg;base64,${imageBase64}`;
@@ -51,16 +131,8 @@ export async function recognizeFood(imageBase64: string): Promise<FoodItem[]> {
       {
         role: 'user',
         content: [
-          {
-            type: 'text',
-            text: SYSTEM_PROMPT,
-          },
-          {
-            type: 'image_url',
-            image_url: {
-              url: imageUrl,
-            },
-          },
+          { type: 'text', text: SYSTEM_PROMPT },
+          { type: 'image_url', image_url: { url: imageUrl } },
         ],
       },
     ],
@@ -69,6 +141,7 @@ export async function recognizeFood(imageBase64: string): Promise<FoodItem[]> {
     stream: false,
   };
 
+  // 3. 调用模型
   try {
     const response = await axios.post(
       `${config.lmstudio.host}/v1/chat/completions`,
@@ -77,10 +150,22 @@ export async function recognizeFood(imageBase64: string): Promise<FoodItem[]> {
     );
 
     const content = response.data?.choices?.[0]?.message?.content || '';
+
+    // 4. 成功后重置空闲计时器
+    resetIdleTimer();
+
     return parseAIResponse(content);
   } catch (error: any) {
     if (error.code === 'ECONNABORTED') {
-      throw new Error('LMStudio 请求超时（60秒），模型可能正在加载中');
+      resetIdleTimer();
+      throw new Error('LMStudio 请求超时，模型可能正在处理中');
+    }
+    // 模型未加载 — 可能刚被卸载，重新加载后重试
+    if (error.response?.status === 400 && error.response?.data?.error?.message?.includes('No models loaded')) {
+      modelLoaded = false;
+      console.log('⏳ 模型未就绪，正在重新加载...');
+      await loadModel();
+      return recognizeFoodWithRetry(payload, MAX_RETRIES - 1);
     }
     if (error.response) {
       throw new Error(`LMStudio 返回错误 ${error.response.status}: ${JSON.stringify(error.response.data)}`);
@@ -90,15 +175,40 @@ export async function recognizeFood(imageBase64: string): Promise<FoodItem[]> {
 }
 
 /**
+ * 带重试的模型调用
+ */
+async function recognizeFoodWithRetry(payload: any, retriesLeft: number): Promise<FoodItem[]> {
+  try {
+    const response = await axios.post(
+      `${config.lmstudio.host}/v1/chat/completions`,
+      payload,
+      { timeout: config.lmstudio.timeout }
+    );
+
+    const content = response.data?.choices?.[0]?.message?.content || '';
+    resetIdleTimer();
+    return parseAIResponse(content);
+  } catch (error: any) {
+    if (error.response?.status === 400 && error.response?.data?.error?.message?.includes('No models loaded')) {
+      if (retriesLeft <= 0) {
+        throw new Error('LMStudio 模型持续未加载，已达最大重试次数');
+      }
+      console.log(`⏳ 模型加载中，等待 15 秒后重试 (剩余 ${retriesLeft} 次)...`);
+      await sleep(15000);
+      return recognizeFoodWithRetry(payload, retriesLeft - 1);
+    }
+    throw error;
+  }
+}
+
+/**
  * 解析 AI 返回的 JSON，兼容常见格式问题
  */
 function parseAIResponse(content: string): FoodItem[] {
   let cleaned = content.trim();
 
-  // 去除可能的 markdown 代码块标记
   cleaned = cleaned.replace(/^```json?\s*\n?/, '').replace(/\n?```\s*$/, '');
 
-  // 尝试提取 JSON 数组
   const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
   if (arrayMatch) {
     cleaned = arrayMatch[0];
@@ -108,7 +218,6 @@ function parseAIResponse(content: string): FoodItem[] {
     const parsed = JSON.parse(cleaned);
     const items: FoodItem[] = Array.isArray(parsed) ? parsed : [parsed];
 
-    // 校验每个项目的基本字段
     return items
       .filter((item) => item.name && typeof item.name === 'string')
       .map((item) => ({
