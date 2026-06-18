@@ -3,8 +3,8 @@ import { z } from 'zod';
 import { getDb } from '../database/connection';
 import { recognizeFood } from '../services/lmstudio';
 import { invalidateInventoryCache } from '../services/redis';
-import { inferCategory, getDefaultExpiryDays, getDefaultStorageLocation } from '../services/food-defaults';
-import { sendHANotification } from '../services/home-assistant';
+import { inferCategory, getDefaultExpiryDays, getDefaultStorageLocation, FOOD_CATEGORY_MAP, FoodCategory } from '../services/food-defaults';
+import { sendHANotification, updateHAInventorySensor, updateHASensor } from '../services/home-assistant';
 
 export const ingestRouter = Router();
 
@@ -14,6 +14,59 @@ export const ingestRouter = Router();
 function isValidDate(dateStr: string): boolean {
   const d = new Date(dateStr);
   return !isNaN(d.getTime()) && /^\d{4}-\d{2}-\d{2}$/.test(dateStr);
+}
+
+/**
+ * 录入后刷新 HA 仪表盘传感器
+ */
+async function refreshHADashboard(familyId: string): Promise<void> {
+  try {
+    const db = getDb();
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+
+    // 获取家庭信息
+    const family = await db('families').where({ id: familyId }).first();
+    if (!family?.ha_entity_prefix) return;
+
+    // 查询所有未删除的食物
+    const allItems = await db('food_items')
+      .where({ family_id: familyId })
+      .whereNull('deleted_at')
+      .select('name', 'expiry_date', 'quantity', 'unit', 'category', 'storage_location');
+
+    const inventoryItems = allItems.map((item) => {
+      const expiry = new Date(item.expiry_date);
+      const daysLeft = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      const category = (item.category as FoodCategory) || 'OTHER';
+      const reminderDays = FOOD_CATEGORY_MAP[category]?.reminderDaysBefore ?? 3;
+
+      let status: 'expired' | 'expiring' | 'fresh' = 'fresh';
+      if (daysLeft < 0) status = 'expired';
+      else if (daysLeft <= reminderDays) status = 'expiring';
+
+      return {
+        name: item.name,
+        quantity: item.quantity,
+        unit: item.unit,
+        category: item.category || 'OTHER',
+        expiry_date: item.expiry_date,
+        days_left: daysLeft,
+        storage_location: item.storage_location || 'PANTRY',
+        status,
+      };
+    }).sort((a, b) => a.days_left - b.days_left);
+
+    await updateHAInventorySensor(family.ha_entity_prefix, inventoryItems);
+
+    // 也更新即将过期传感器
+    const expiringItems = inventoryItems
+      .filter(i => i.status === 'expiring')
+      .map(i => ({ name: i.name, expiry_date: i.expiry_date, days_left: i.days_left }));
+    await updateHASensor(family.ha_entity_prefix, expiringItems);
+  } catch (error: any) {
+    console.error('❌ 刷新 HA 仪表盘失败:', error.message);
+  }
 }
 
 // 请求校验 Schema
@@ -164,6 +217,7 @@ ingestRouter.post('/photo', async (req: Request, res: Response): Promise<void> =
 
     // 5. 清除缓存，触发 HA 同步
     await invalidateInventoryCache(family_id);
+    await refreshHADashboard(family_id);
 
     // 6. 返回成功
     res.status(200).json({
@@ -269,6 +323,7 @@ ingestRouter.post('/manual', async (req: Request, res: Response): Promise<void> 
     }
 
     await invalidateInventoryCache(family_id);
+    await refreshHADashboard(family_id);
 
     res.status(200).json({
       code: 0,
@@ -409,6 +464,7 @@ ingestRouter.post('/text', async (req: Request, res: Response): Promise<void> =>
     }
 
     await invalidateInventoryCache(family_id);
+    await refreshHADashboard(family_id);
 
     res.status(200).json({
       code: 0,
@@ -483,6 +539,7 @@ async function processPhoto(familyId: string, imageBase64: string, shootTime?: s
   }
 
   await invalidateInventoryCache(familyId);
+  await refreshHADashboard(familyId);
 
   // 通过 HA 发送通知到 iPhone
   await sendHANotification(
