@@ -2,8 +2,8 @@ import { Request, Response, NextFunction } from 'express';
 import { config } from '../config';
 
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Skip auth for health check
-  if (req.path === '/health') {
+  // Skip auth for health check and dashboard
+  if (req.path === '/health' || req.path.startsWith('/dashboard')) {
     next();
     return;
   }

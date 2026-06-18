@@ -20,7 +20,7 @@ export const config = {
   lmstudio: {
     host: process.env.LMSTUDIO_HOST || 'http://localhost:1234',
     model: process.env.VISION_MODEL || 'llama-3.2-11b-vision',
-    timeout: 60000, // 60 seconds
+    timeout: 180000, // 180 seconds - 视觉模型推理需要更长时间
   },
   homeAssistant: {
     url: process.env.HA_URL || 'http://homeassistant.local:8123',

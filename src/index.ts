@@ -6,6 +6,7 @@ import { ingestRouter } from './routes/ingest';
 import { inventoryRouter } from './routes/inventory';
 import { recipeRouter } from './routes/recipe';
 import { familyRouter } from './routes/family';
+import { dashboardRouter } from './routes/dashboard';
 import { startExpiryChecker } from './jobs/expiry-checker';
 
 const app = express();
@@ -25,6 +26,9 @@ app.use('/api/v1/families', familyRouter);
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Dashboard (不需要 API Key 认证)
+app.use('/dashboard', dashboardRouter);
 
 // Start server
 app.listen(config.server.port, () => {

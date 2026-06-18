@@ -2,7 +2,7 @@ import Bull from 'bull';
 import { config } from '../config';
 import { getDb } from '../database/connection';
 import { cacheExpiringItems } from '../services/redis';
-import { updateHASensor, sendHANotification } from '../services/home-assistant';
+import { updateHASensor, sendHANotification, updateHAInventorySensor } from '../services/home-assistant';
 import { FOOD_CATEGORY_MAP, FoodCategory } from '../services/food-defaults';
 
 // 创建 Bull 队列
@@ -59,7 +59,7 @@ async function processExpiryCheck(): Promise<void> {
       .where({ family_id: family.id })
       .whereNull('deleted_at')
       .where('expiry_date', '>=', todayStr)
-      .select('name', 'expiry_date', 'quantity', 'unit', 'category');
+      .select('name', 'expiry_date', 'quantity', 'unit', 'category', 'storage_location');
 
     // 根据每个食物的品类，判断是否进入提醒窗口
     const expiringItems = allItems.filter((item) => {
@@ -75,7 +75,7 @@ async function processExpiryCheck(): Promise<void> {
       .where({ family_id: family.id })
       .whereNull('deleted_at')
       .where('expiry_date', '<', todayStr)
-      .select('name', 'expiry_date', 'quantity', 'unit', 'category');
+      .select('name', 'expiry_date', 'quantity', 'unit', 'category', 'storage_location');
 
     // 计算剩余天数并按紧急程度排序
     const itemsWithDaysLeft = expiringItems
@@ -92,6 +92,31 @@ async function processExpiryCheck(): Promise<void> {
     // 更新 HA 传感器
     if (family.ha_entity_prefix) {
       await updateHASensor(family.ha_entity_prefix, itemsWithDaysLeft);
+
+      // 更新完整库存传感器（所有食物 + 状态）
+      const allInventory = [...allItems, ...expiredItems].map((item) => {
+        const expiry = new Date(item.expiry_date);
+        const daysLeft = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        const category = (item.category as FoodCategory) || 'OTHER';
+        const reminderDays = FOOD_CATEGORY_MAP[category]?.reminderDaysBefore ?? 3;
+
+        let status: 'expired' | 'expiring' | 'fresh' = 'fresh';
+        if (daysLeft < 0) status = 'expired';
+        else if (daysLeft <= reminderDays) status = 'expiring';
+
+        return {
+          name: item.name,
+          quantity: item.quantity,
+          unit: item.unit,
+          category: item.category || 'OTHER',
+          expiry_date: item.expiry_date,
+          days_left: daysLeft,
+          storage_location: item.storage_location || 'PANTRY',
+          status,
+        };
+      }).sort((a, b) => a.days_left - b.days_left);
+
+      await updateHAInventorySensor(family.ha_entity_prefix, allInventory);
     }
 
     // 有即将过期或已过期食物时发送通知（按品类分组）
